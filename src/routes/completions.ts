@@ -20,6 +20,21 @@ completions.post('/v1/chat/completions', async (c) => {
     return c.json({ error: 'No messages provided' }, 400);
   }
 
+  // Store raw payload for dev/debug
+  try {
+    const debugNow = new Date();
+    const debugId = debugNow.toISOString().replace(/[-:T]/g, '').slice(0, 14) + '-' + crypto.randomUUID().slice(0, 8);
+    await c.env.CARDS.put(`debug:${debugId}`, JSON.stringify(body));
+
+    const debugIndexRaw = await c.env.CARDS.get('debug:index');
+    const debugIndex: { id: string; created_at: string; size: number }[] = debugIndexRaw ? JSON.parse(debugIndexRaw) : [];
+    debugIndex.unshift({ id: debugId, created_at: debugNow.toISOString(), size: JSON.stringify(body).length });
+    if (debugIndex.length > 50) debugIndex.length = 50;
+    await c.env.CARDS.put('debug:index', JSON.stringify(debugIndex));
+  } catch {
+    // Debug storage is best-effort, don't break the main flow
+  }
+
   // Parse the messages into card fields
   const parsed = parseMessages(body.messages);
   const card = buildV2Card(parsed);

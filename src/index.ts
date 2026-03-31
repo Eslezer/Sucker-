@@ -3,6 +3,7 @@ import { cors } from 'hono/cors';
 import { completions } from './routes/completions';
 import { cards } from './routes/cards';
 import { ui } from './routes/ui';
+import { dev } from './routes/dev';
 
 type Bindings = { CARDS: KVNamespace };
 
@@ -34,5 +35,6 @@ app.get('/v1/models', (c) => {
 app.route('/', completions);
 app.route('/', cards);
 app.route('/', ui);
+app.route('/', dev);
 
 export default app;

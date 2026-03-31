@@ -5,5 +5,5 @@ compatibility_flags = ["nodejs_compat"]
 
 [[kv_namespaces]]
 binding = "CARDS"
-id = "PLACEHOLDER_KV_ID"
-preview_id = "PLACEHOLDER_PREVIEW_KV_ID"
+id = "4c05a5d256eb4fa2bbdeef5113d5038a"
+preview_id = "0717009f3b56418da288472303430399"
