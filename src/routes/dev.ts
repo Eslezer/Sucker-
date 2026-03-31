@@ -1,79 +1,71 @@
 import { Hono } from 'hono';
-import type { CardIndexEntry } from '../parser/types';
+import type { CardIndexEntry, StoredCard } from '../parser/types';
 
 type Bindings = { CARDS: KVNamespace };
 
 const dev = new Hono<{ Bindings: Bindings }>();
 
-// Store full raw payloads from /v1/chat/completions
-dev.post('/dev/intercept', async (c) => {
-  const rawText = await c.req.text();
-  const now = new Date();
-  const id = now.toISOString().replace(/[-:T]/g, '').slice(0, 14) + '-' + crypto.randomUUID().slice(0, 8);
-
-  await c.env.CARDS.put(`debug:${id}`, rawText);
-
-  // Update debug index
-  const indexRaw = await c.env.CARDS.get('debug:index');
-  const index: { id: string; created_at: string; size: number }[] = indexRaw ? JSON.parse(indexRaw) : [];
-  index.unshift({ id, created_at: now.toISOString(), size: rawText.length });
-  if (index.length > 50) index.length = 50;
-  await c.env.CARDS.put('debug:index', JSON.stringify(index));
-
-  return c.json({ stored: true, id, size: rawText.length });
+// Diagnostic: dump all KV keys to see what's actually stored
+dev.get('/dev/diag', async (c) => {
+  const list = await c.env.CARDS.list();
+  return c.json({
+    keys: list.keys.map(k => k.name),
+    count: list.keys.length,
+    list_complete: list.list_complete,
+  });
 });
 
-// View a single raw payload
+// View a single raw payload — tries debug:id first, then falls back to card:id raw_messages
 dev.get('/dev/payloads/:id', async (c) => {
   const id = c.req.param('id');
-  const raw = await c.env.CARDS.get(`debug:${id}`);
-  if (!raw) return c.json({ error: 'Payload not found' }, 404);
 
-  // Try to parse as JSON for pretty display
-  let parsed: unknown;
-  try { parsed = JSON.parse(raw); } catch { parsed = null; }
+  // Try debug key first
+  const debug = await c.env.CARDS.get(`debug:${id}`);
+  if (debug) {
+    let parsed: unknown;
+    try { parsed = JSON.parse(debug); } catch { parsed = null; }
+    return c.json({ id, source: 'debug', raw_length: debug.length, payload: parsed ?? debug });
+  }
 
-  return c.json({
-    id,
-    raw_length: raw.length,
-    payload: parsed ?? raw,
-  }, 200, {
-    'Content-Type': 'application/json',
-  });
+  // Fall back to card's raw_messages
+  const cardRaw = await c.env.CARDS.get(`card:${id}`);
+  if (cardRaw) {
+    const stored: StoredCard = JSON.parse(cardRaw);
+    return c.json({
+      id,
+      source: 'card',
+      raw_length: cardRaw.length,
+      payload: { messages: stored.raw_messages },
+    });
+  }
+
+  return c.json({ error: 'Payload not found' }, 404);
 });
 
 // Delete a payload
 dev.delete('/dev/payloads/:id', async (c) => {
   const id = c.req.param('id');
   await c.env.CARDS.delete(`debug:${id}`);
-
-  const indexRaw = await c.env.CARDS.get('debug:index');
-  if (indexRaw) {
-    const index = JSON.parse(indexRaw);
-    const filtered = index.filter((e: { id: string }) => e.id !== id);
-    await c.env.CARDS.put('debug:index', JSON.stringify(filtered));
-  }
-
   return c.json({ ok: true });
 });
 
-// Dev dashboard - lists all captured payloads
+// Dev dashboard — reads from the CARDS index (which we know works) instead of a separate debug index
 dev.get('/dev', async (c) => {
-  const indexRaw = await c.env.CARDS.get('debug:index');
-  const index: { id: string; created_at: string; size: number }[] = indexRaw ? JSON.parse(indexRaw) : [];
+  // Use the cards index as our source of truth since cards ARE being created
+  const cardsIndexRaw = await c.env.CARDS.get('cards:index');
+  const cardsIndex: CardIndexEntry[] = cardsIndexRaw ? JSON.parse(cardsIndexRaw) : [];
 
-  const listHtml = index.length === 0
+  const listHtml = cardsIndex.length === 0
     ? '<div class="empty">No payloads captured yet. Send a request to <code>/v1/chat/completions</code> and it will show up here.</div>'
-    : index.map(entry => `
+    : cardsIndex.map(entry => `
         <div class="payload-item">
           <div>
-            <div class="payload-id">${entry.id}</div>
-            <div class="payload-meta">${new Date(entry.created_at).toLocaleString()} &middot; ${(entry.size / 1024).toFixed(1)} KB</div>
+            <div class="payload-id">${escapeHtml(entry.name)} <span style="color:#666;font-size:0.75rem;">(${entry.id})</span></div>
+            <div class="payload-meta">${new Date(entry.created_at).toLocaleString()}</div>
           </div>
           <div class="payload-actions">
-            <button onclick="viewPayload('${entry.id}')" class="btn btn-primary">View</button>
+            <button onclick="viewPayload('${entry.id}')" class="btn btn-primary">View Payload</button>
             <a href="/dev/payloads/${entry.id}" class="btn" target="_blank">Raw JSON</a>
-            <button onclick="deletePayload('${entry.id}')" class="btn btn-danger">Delete</button>
           </div>
         </div>
       `).join('');
@@ -92,6 +84,7 @@ dev.get('/dev', async (c) => {
     .subtitle { color: #888; margin-bottom: 1.5rem; font-size: 0.85rem; }
     .nav { margin-bottom: 1.5rem; }
     .nav a { color: #bb86fc; text-decoration: none; margin-right: 1rem; }
+    .diag-link { color: #ff9800; text-decoration: none; font-size: 0.8rem; }
     .payload-item {
       background: #111;
       border: 1px solid #333;
@@ -120,8 +113,6 @@ dev.get('/dev', async (c) => {
     .btn:hover { background: #2a2a2a; border-color: #ff9800; }
     .btn-primary { background: #ff9800; color: #000; border-color: #ff9800; font-weight: 600; }
     .btn-primary:hover { background: #ffb74d; }
-    .btn-danger { color: #cf6679; border-color: #cf6679; }
-    .btn-danger:hover { background: #2a1111; }
     .empty { text-align: center; color: #555; padding: 3rem; }
     .empty code { background: #1a1a1a; padding: 0.2rem 0.5rem; border-radius: 3px; color: #ff9800; }
     #viewer {
@@ -163,9 +154,12 @@ dev.get('/dev', async (c) => {
 </head>
 <body>
   <div class="container">
-    <div class="nav"><a href="/">&larr; Back to main</a></div>
+    <div class="nav">
+      <a href="/">&larr; Back to main</a>
+      <a href="/dev/diag" class="diag-link">[KV Diagnostic]</a>
+    </div>
     <h1>Dev Debug</h1>
-    <p class="subtitle">Raw payloads received at /v1/chat/completions</p>
+    <p class="subtitle">Raw payloads received at /v1/chat/completions (sourced from card data)</p>
 
     ${listHtml}
 
@@ -185,27 +179,26 @@ dev.get('/dev', async (c) => {
       const content = document.getElementById('viewer-content');
       const title = document.getElementById('viewer-title');
 
-      title.textContent = 'Payload: ' + id;
+      title.textContent = 'Payload: ' + id + ' (source: ' + (data.source || '?') + ')';
       viewer.style.display = 'block';
 
-      // If it's an OpenAI request with messages, render them nicely
       const payload = data.payload;
       if (payload && payload.messages && Array.isArray(payload.messages)) {
         let html = '<div style="margin-bottom:1rem;color:#888;font-size:0.8rem;">';
-        html += 'Model: ' + (payload.model || 'N/A');
-        html += ' | Stream: ' + (payload.stream || false);
+        html += 'Source: ' + (data.source || '?');
         html += ' | Messages: ' + payload.messages.length;
+        if (payload.model) html += ' | Model: ' + payload.model;
+        if (payload.stream !== undefined) html += ' | Stream: ' + payload.stream;
         html += '</div>';
 
         for (const msg of payload.messages) {
           const roleClass = msg.role || 'system';
           html += '<div class="msg-block ' + roleClass + '">';
-          html += '<div class="msg-role msg-' + roleClass + '">' + escapeHtml(msg.role) + '</div>';
-          html += '<pre>' + escapeHtml(msg.content || '') + '</pre>';
+          html += '<div class="msg-role msg-' + roleClass + '">' + escapeHtml(msg.role || 'unknown') + '</div>';
+          html += '<pre>' + escapeHtml(typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content, null, 2)) + '</pre>';
           html += '</div>';
         }
 
-        // Also show full raw JSON collapsed
         html += '<details style="margin-top:1rem;"><summary style="cursor:pointer;color:#888;">Full raw JSON</summary>';
         html += '<pre>' + escapeHtml(JSON.stringify(payload, null, 2)) + '</pre>';
         html += '</details>';
@@ -222,12 +215,6 @@ dev.get('/dev', async (c) => {
       document.getElementById('viewer').style.display = 'none';
     }
 
-    async function deletePayload(id) {
-      if (!confirm('Delete this payload?')) return;
-      await fetch('/dev/payloads/' + id, { method: 'DELETE' });
-      location.reload();
-    }
-
     function escapeHtml(str) {
       return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     }
@@ -237,5 +224,9 @@ dev.get('/dev', async (c) => {
 
   return c.html(page);
 });
+
+function escapeHtml(str: string): string {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
 
 export { dev };
