@@ -12,6 +12,19 @@ export interface OpenAIChatRequest {
   [key: string]: unknown;
 }
 
+export interface LorebookEntry {
+  keys: string[];
+  content: string;
+  enabled: boolean;
+  insertion_order: number;
+}
+
+export interface Lorebook {
+  name: string;
+  description: string;
+  entries: LorebookEntry[];
+}
+
 export interface ParsedFields {
   name?: string;
   description?: string;
@@ -26,12 +39,9 @@ export interface ParsedFields {
   tags?: string[];
   creator?: string;
   character_version?: string;
+  lorebook?: Lorebook;
   _unmatched?: string;
-}
-
-export interface ParseStrategy {
-  name: string;
-  parse(systemContent: string): ParsedFields;
+  _user_persona_name?: string;
 }
 
 export interface StoredCard {
